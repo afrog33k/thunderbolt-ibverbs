@@ -13,7 +13,7 @@
 #include "../proto/native_data.h"
 #include "tbv.h"
 
-#define TBV_NATIVE_RING_SIZE 1024
+#define TBV_NATIVE_RING_SIZE 4096
 /* Apple-originated bursts can exhaust a 256-entry RX ring before credits
  * recycle. 1024 entries passed checked Mac-to-Linux UC bursts beyond one full
  * ring while keeping per-direction buffer cost modest.
