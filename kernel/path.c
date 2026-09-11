@@ -5,6 +5,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/jiffies.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/thunderbolt.h>
@@ -1954,6 +1955,85 @@ err_in_hop:
 	return ret;
 }
 
+/*
+ * Apple NHI interrupt throttle (0xd004c, 256 ns units).
+ *
+ * The stock/Intel register (0x38c00) is programmed via nhi_throttle_direct and
+ * MUST NOT be written on an Apple NHI -- the register lives elsewhere there.
+ * On Apple hardware the kernel's own activation path does the write:
+ * apple_nhi_ring_interrupt_active() programs APPLE_CIO_NHI_IRQ_THROTTLE from
+ * ring->interval_nsec and SKIPS the write when the field is zero. So a zero
+ * module parameter proves nothing was written, and the register keeps whatever
+ * it held -- the 0xFF firmware default is 255 * 256 ns = 65.28 us, measured as
+ * a size-independent latency floor (2 B through 4 KB all ~65.3 us; ib_send_lat,
+ * zeus<->fedora, 2026-09-09; fixed by the same mechanism on fedora's stock NHI
+ * at 4.4x).
+ *
+ * This module never used to set ring->interval_nsec, so on Apple NHIs the
+ * write was skipped forever. Fix: set the field before the rings start, then
+ * read the register back as proof. Applies to EVERY ring on an Apple NHI --
+ * including native-backend rings to a Linux peer -- because the NHI is Apple's
+ * regardless of who the peer is. That is why this is not gated on peer backend
+ * (tbv_path_is_apple() is backend-based and would skip exactly the leg that
+ * needs this).
+ */
+/* Apple NHIs exist only on Apple-SoC hosts, so the host DT names the NHI type. */
+static bool tbv_host_is_apple(void)
+{
+	return of_machine_is_compatible("apple,arm-platform");
+}
+
+static void tbv_path_apply_ring_interval(struct tbv_path *path)
+{
+#ifdef TBV_HAVE_RING_INTERVAL_NSEC
+	unsigned int interval = READ_ONCE(nhi_interrupt_throttle_ns);
+	struct tb_ring *tx = path->tx_ring, *rx = path->rx_ring;
+	u32 raw, idx;
+
+	if (!interval || !tx || !rx)
+		return;
+
+	if (tbv_host_is_apple() && tx->nhi && tx->nhi->iobase) {
+		/* apple_cio_ring_index(): the TX ring index is its hop. */
+		idx = tx->hop;
+		raw = ioread32(tx->nhi->iobase + TBV_APPLE_NHI_IRQ_THROTTLE +
+			       4 * idx);
+		pr_info("apple ring throttle BEFORE: tx hop=%d raw=%u (%u ns)\n",
+			 tx->hop, raw,
+			 raw * TBV_APPLE_NHI_IRQ_THROTTLE_GRANULARITY_NSEC);
+	}
+
+	tx->interval_nsec = interval;
+	rx->interval_nsec = interval;
+#endif
+}
+
+static void tbv_path_apple_throttle_readback(const struct tbv_path *path)
+{
+#ifdef TBV_HAVE_RING_INTERVAL_NSEC
+	unsigned int interval = READ_ONCE(nhi_interrupt_throttle_ns);
+	struct tb_ring *tx = path->tx_ring, *rx = path->rx_ring;
+	u32 raw, idx;
+
+	if (!interval || !tx || !rx || !tbv_host_is_apple())
+		return;
+	if (!tx->nhi || !tx->nhi->iobase || !rx->nhi || !rx->nhi->iobase)
+		return;
+
+	/* TX ring index is its hop; RX ring index is hop + n_rings. */
+	idx = tx->hop;
+	raw = ioread32(tx->nhi->iobase + TBV_APPLE_NHI_IRQ_THROTTLE + 4 * idx);
+	pr_info("apple ring throttle AFTER : tx hop=%d raw=%u (%u ns) req=%u ns\n",
+		 tx->hop, raw,
+		 raw * TBV_APPLE_NHI_IRQ_THROTTLE_GRANULARITY_NSEC, interval);
+	idx = rx->hop + rx->nhi->hop_count;
+	raw = ioread32(rx->nhi->iobase + TBV_APPLE_NHI_IRQ_THROTTLE + 4 * idx);
+	pr_info("apple ring throttle AFTER : rx hop=%d raw=%u (%u ns) req=%u ns\n",
+		 rx->hop, raw,
+		 raw * TBV_APPLE_NHI_IRQ_THROTTLE_GRANULARITY_NSEC, interval);
+#endif
+}
+
 int tbv_path_start_rings(struct tbv_path *path)
 {
 	u32 i;
@@ -1962,8 +2042,10 @@ int tbv_path_start_rings(struct tbv_path *path)
 	if (path->state != TBV_PATH_RING_ALLOCATED)
 		return -EINVAL;
 
+	tbv_path_apply_ring_interval(path);
 	tb_ring_start(path->tx_ring);
 	tb_ring_start(path->rx_ring);
+	tbv_path_apple_throttle_readback(path);
 	path->state = TBV_PATH_RING_STARTED;
 	for (i = 0; i < path->rx_frame_count; i++) {
 		ret = tbv_path_post_rx_frame(&path->rx_frames[i]);
@@ -3504,8 +3586,10 @@ static int tbv_path_restart_rings(struct tbv_path *path)
 
 	pr_info("ring barrier: phase restart begin tx hop %d rx hop %d\n",
 		path->tx_ring->hop, path->rx_ring->hop);
+	tbv_path_apply_ring_interval(path);
 	tb_ring_start(path->tx_ring);
 	tb_ring_start(path->rx_ring);
+	tbv_path_apple_throttle_readback(path);
 	pr_info("ring barrier: phase restart end (tx base=%pad rx base=%pad)\n",
 		&path->tx_ring->descriptors_dma, &path->rx_ring->descriptors_dma);
 	path->rings_stopped = false;
