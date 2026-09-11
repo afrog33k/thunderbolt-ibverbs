@@ -1,102 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include <linux/debugfs.h>
-#include <linux/io.h>
 #include <linux/seq_file.h>
 #include <linux/thunderbolt.h>
-#include <linux/version.h>
 
 #include "../proto/native_wire.h"
 #include "tbv.h"
-#include "ring_diag.h"
-
-/* Read-only diagnostic for the Linux 6.18 PCI NHI ABI, never Apple NHI. */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0) && \
-    LINUX_VERSION_CODE < KERNEL_VERSION(6, 19, 0)
-struct tbv_diag_desc {
-	u64 phys;
-	u32 ctrl;
-	u32 time;
-} __packed;
-
-static void tbv_debugfs_ring_show(struct seq_file *s, struct tb_ring *ring,
-				const char *direction)
-{
-	struct {
-		bool running, hw_valid, tail_valid, throttle_valid;
-		int head, tail, size, hop, irq, e2e_tx_hop;
-		unsigned int vector, flags, queued, inflight, outstanding;
-		u32 index, options, options_e2e, tail_ctrl, throttle;
-	} snap = { 0 };
-	const struct tbv_diag_desc *descs;
-	struct list_head *pos;
-	unsigned long irqflags;
-	void __iomem *base;
-
-	BUILD_BUG_ON(sizeof(struct tbv_diag_desc) != 16);
-	if (!ring) {
-		seq_printf(s, "    ring_%s present=0\n", direction);
-		return;
-	}
-	/* Caller holds state->lock: rails unlink before freeing their rings. */
-	spin_lock_irqsave(&ring->lock, irqflags);
-	snap.running = ring->running;
-	snap.head = ring->head;
-	snap.tail = ring->tail;
-	snap.size = ring->size;
-	snap.hop = ring->hop;
-	snap.irq = ring->irq;
-	snap.vector = ring->vector;
-	snap.flags = ring->flags;
-	snap.e2e_tx_hop = ring->e2e_tx_hop;
-	list_for_each(pos, &ring->queue)
-		snap.queued++;
-	list_for_each(pos, &ring->in_flight)
-		snap.inflight++;
-	if (snap.size > 0 && snap.head >= 0 && snap.head < snap.size &&
-	    snap.tail >= 0 && snap.tail < snap.size) {
-		snap.outstanding = (snap.head - snap.tail + snap.size) % snap.size;
-		descs = (const struct tbv_diag_desc *)ring->descriptors;
-		if (descs && snap.outstanding) {
-			snap.tail_ctrl = READ_ONCE(descs[snap.tail].ctrl);
-			snap.tail_valid = true;
-		}
-	}
-	if (ring->nhi && ring->nhi->pdev && ring->nhi->iobase &&
-	    snap.hop >= 0 && snap.hop < ring->nhi->hop_count) {
-		base = ring->nhi->iobase;
-		snap.index = ioread32(base + (ring->is_tx ? 0 : 0x8000) +
-				     snap.hop * 16 + 8);
-		snap.options = ioread32(base + (ring->is_tx ? 0x19800 : 0x29800) +
-				       snap.hop * 32);
-		snap.options_e2e = ioread32(base + (ring->is_tx ? 0x19800 : 0x29800) +
-					   snap.hop * 32 + 4);
-		snap.hw_valid = true;
-		if (snap.vector < 16) {
-			snap.throttle = ioread32(base + 0x38c00 + snap.vector * 4);
-			snap.throttle_valid = true;
-		}
-	}
-	spin_unlock_irqrestore(&ring->lock, irqflags);
-	seq_printf(s, "    ring_%s present=1 running=%u head=%d tail=%d size=%d hop=%d irq=%d vector=%u flags=0x%x e2e_tx_hop=%d sw_queue=%u in_flight=%u outstanding=%u hw_valid=%u hw_index=%u hw_index_raw=0x%x hw_options=0x%x hw_options_next=0x%x hw_enabled=%u hw_e2e=%u hw_e2e_hop=%u tail_valid=%u tail_ctrl=0x%x tail_flags=0x%x tail_completed=%u throttle_valid=%u throttle_raw=%u\n",
-		   direction, snap.running, snap.head, snap.tail, snap.size,
-		   snap.hop, snap.irq, snap.vector, snap.flags, snap.e2e_tx_hop,
-		   snap.queued, snap.inflight, snap.outstanding, snap.hw_valid,
-		   tbv_diag_hw_index(snap.index, ring->is_tx), snap.index,
-		   snap.options, snap.options_e2e, !!(snap.options & BIT(31)),
-		   !!(snap.options & BIT(28)), tbv_diag_e2e_hop(snap.options),
-		   snap.tail_valid, snap.tail_ctrl, tbv_diag_desc_flags(snap.tail_ctrl),
-		   !!(tbv_diag_desc_flags(snap.tail_ctrl) & RING_DESC_COMPLETED),
-		   snap.throttle_valid, snap.throttle);
-}
-#else
-static void tbv_debugfs_ring_show(struct seq_file *s, struct tb_ring *ring,
-				const char *direction)
-{
-	seq_printf(s, "    ring_%s present=%u hw_valid=0 unsupported_kernel_abi=1\n",
-		   direction, !!ring);
-}
-#endif
 
 static u32 tbv_debugfs_wire_path_flags(const struct tbv_path *path)
 {
@@ -575,8 +484,6 @@ static int tbv_debugfs_peers_show(struct seq_file *s, void *unused)
 				   rail->path.tx_poll_enabled,
 				   atomic64_read(&rail->path.tx_poll_calls),
 				   atomic64_read(&rail->path.tx_poll_completed));
-			tbv_debugfs_ring_show(s, rail->path.tx_ring, "tx");
-			tbv_debugfs_ring_show(s, rail->path.rx_ring, "rx");
 			seq_printf(s,
 				   "    rx_supp_poll enabled=%u calls=%lld completed=%lld\n",
 				   rail->path.rx_supp_poll_enabled,
