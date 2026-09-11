@@ -340,6 +340,24 @@ MODULE_PARM_DESC(tx_progress_poll,
 		 "Supplemental 1 ms TX completion polling: -1 auto (native only, default), 0 off, 1 on. Takes effect at the next path start; peers reports the resolved value as tx_poll enabled=");
 
 /*
+ * Supplemental RX completion polling. -1 = auto (default, unchanged for the
+ * Apple backend: native paths only), 0 = off everywhere, 1 = on everywhere.
+ * The RX ring is normally drained by the NHI interrupt; when that interrupt
+ * is lost, a completed frame strands in the ring -- the wire ACK is already
+ * out, so the sender never retransmits, and the receiver never delivers.
+ * Measured 2026-09-11: a UC pingpong froze permanently at exactly this shape
+ * (client send 13242 completed, server posted 13241 replies, no RNR, no dup,
+ * no error, both ends silent). The supp poll reaps such frames within
+ * TBV_RX_SUPP_POLL_DELAY_MS (1 ms) of the last TX post, for a 16 ms window.
+ * Apple stays off: its RX frames carry no per-message sequence and the verbs
+ * receive path there is order-sensitive (see the rx_supp_poll_enabled site).
+ */
+static int rx_supp_poll = -1;
+module_param(rx_supp_poll, int, 0644);
+MODULE_PARM_DESC(rx_supp_poll,
+		 "Supplemental RX completion polling: -1 auto (native only, default), 0 off, 1 on. Rescues RX frames whose completion interrupt was lost; takes effect at the next path start; peers reports the resolved value as rx_supp_poll enabled=");
+
+/*
  * Placement of the TX post path.
  *
  * What can be placed and what cannot, from the code:
@@ -628,6 +646,30 @@ static bool tbv_path_progress_poll_enabled(const struct tbv_path *path)
 	 * data path -- normal NHI TX callbacks carry Apple completions. It is
 	 * reserved for native, where a missed notification has no other
 	 * recovery. peers reports the resolved value as "tx_poll enabled=".
+	 */
+	return path->rail->peer->backend == TBV_BACKEND_NATIVE;
+}
+
+static bool tbv_path_rx_supp_poll_enabled(const struct tbv_path *path)
+{
+	int mode = READ_ONCE(rx_supp_poll);
+
+	if (!path->rail || !path->rail->peer)
+		return false;
+
+	if (mode == 0)
+		return false;
+	if (mode > 0)
+		return true;
+
+	/*
+	 * Auto (default): Apple RX frames carry no per-message sequence number
+	 * and the Apple verbs receive path is order-sensitive, so the Apple
+	 * backend keeps RX completion single-sourced. Native frames carry PSNs
+	 * and the native receive path serializes on the QP rx_lock, so the
+	 * supplemental poll is safe there -- and it is the only recovery for a
+	 * frame the NHI completed but never signalled. peers reports the
+	 * resolved value as "rx_supp_poll enabled=".
 	 */
 	return path->rail->peer->backend == TBV_BACKEND_NATIVE;
 }
@@ -1895,14 +1937,13 @@ int tbv_path_alloc_rings(struct tbv_path *path, struct tb_xdomain *xd,
 
 	path->tx_poll_enabled = tbv_path_progress_poll_enabled(path);
 	/*
-	 * RX frames for the Apple-compatible verbs path carry no per-message
-	 * sequence number. Processing the same RX ring from the normal
-	 * completion path and a supplemental poller can therefore expose later
-	 * frames to the verbs receive queue before earlier frames. Keep RX
-	 * completion single-sourced; TX polling is still used for timely send
-	 * completions.
+	 * RX completion source policy: see tbv_path_rx_supp_poll_enabled().
+	 * Native-only auto by default; Apple stays single-sourced (its RX
+	 * frames carry no per-message sequence number, so a second reaper
+	 * could expose later frames to the Apple verbs receive queue before
+	 * earlier ones).
 	 */
-	path->rx_supp_poll_enabled = false;
+	path->rx_supp_poll_enabled = tbv_path_rx_supp_poll_enabled(path);
 	path->rx_ring = tb_ring_alloc_rx(xd->tb->nhi, rx_hop,
 					 path->cfg.rx_ring_size,
 					 path->cfg.rx_flags, e2e_tx_hop,
