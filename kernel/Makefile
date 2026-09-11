@@ -11,14 +11,6 @@ thunderbolt_ibverbs-y := main.o profile.o backend.o configfs.o core.o debugfs.o 
 
 ccflags-y := -Wall -Wextra -Wno-unused-parameter -I$(src) -I$(src)/..
 
-# COMPAT PROBE (mirrors tbv-stock-kernel-compat.patch). The Apple interrupt-
-# throttle code in path.c needs struct tb_ring.interval_nsec, which stock
-# kernels may lack; probe and compile it out where the member is absent.
-TBV_TB_HDR := $(KDIR)/include/linux/thunderbolt.h
-ifneq ($(shell grep -c interval_nsec $(TBV_TB_HDR) 2>/dev/null),0)
-ccflags-y += -DTBV_HAVE_RING_INTERVAL_NSEC
-endif
-
 # COMPAT PROBE. The Asahi USB4 kernel carries two thunderbolt.h members that
 # stock kernels do not: tb_ring.interval_nsec and tb_nhi.ring_layout. Neither is
 # load-bearing here -- interval_nsec is only printed in debugfs, and ring_layout
