@@ -7,6 +7,11 @@ builds and runs on its zeus↔fedora link: Apple M2 Ultra (Asahi 7.1.13-usb4gpu,
 Apple NHI) on one end, AMD Strix Halo (Fedora 6.18-rc7, stock PCI NHI) on the
 other, over a 20 Gb/s Thunderbolt leg.
 
+Mirror: https://github.com/afrog33k/thunderbolt-ibverbs · GPL-2.0 (kernel
+module; per-file SPDX in the sources). The write-up of the freeze hunt these
+patches come from is at
+[boracode.ai/blog/thunderbolt-no-incarnation](https://boracode.ai/blog/thunderbolt-no-incarnation).
+
 Every change after the upstream import is one lane patch, committed in the
 order it was applied. `patches/` holds the raw diffs; the measured evidence
 for each is in the lane spec `build-lanes/lanes/tbv-uc-scale-stall.md` of the
