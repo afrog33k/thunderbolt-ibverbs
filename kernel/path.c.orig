@@ -262,11 +262,7 @@ static void tbv_path_apple_throttle_show(struct seq_file *s, const char *what,
 	seq_printf(s, " %s[idx=%u hop=%d]=raw:%u ns:%u req_ns:%u", what, idx,
 		   ring->hop, raw,
 		   raw * TBV_APPLE_NHI_IRQ_THROTTLE_GRANULARITY_NSEC,
-#ifdef TBV_HAVE_RING_INTERVAL_NSEC
 		   ring->interval_nsec);
-#else
-		   0u);   /* stock kernel: no per-ring interval to report */
-#endif
 }
 
 void tbv_path_show_apple_throttle(struct seq_file *s, struct tbv_path *path)
@@ -3464,13 +3460,9 @@ static const struct tbv_nhi_ring_layout_view tbv_nhi_default_layout = {
 static const struct tbv_nhi_ring_layout_view *
 tbv_nhi_ring_layout(const struct tb_ring *ring)
 {
-#ifdef TBV_HAVE_NHI_RING_LAYOUT
 	if (ring->nhi->ring_layout)
 		return (const struct tbv_nhi_ring_layout_view *)
 			ring->nhi->ring_layout;
-#endif
-	/* Stock kernels expose no per-NHI layout; the default is what the
-	 * patched path falls back to anyway. */
 	return &tbv_nhi_default_layout;
 }
 

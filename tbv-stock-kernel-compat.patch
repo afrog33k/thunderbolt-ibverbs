@@ -1,0 +1,53 @@
+--- a/kernel/Makefile	2026-09-06 10:37:20
++++ b/kernel/Makefile	2026-09-09 16:07:17
+@@ -11,6 +11,22 @@
+ 
+ ccflags-y := -Wall -Wextra -Wno-unused-parameter -I$(src) -I$(src)/..
+ 
++# COMPAT PROBE. The Asahi USB4 kernel carries two thunderbolt.h members that
++# stock kernels do not: tb_ring.interval_nsec and tb_nhi.ring_layout. Neither is
++# load-bearing here -- interval_nsec is only printed in debugfs, and ring_layout
++# already has a built-in default fallback -- so probe for them rather than
++# requiring a patched kernel. Without this, the module simply fails to build on
++# a stock kernel and the two ends of a link silently run DIFFERENT module
++# versions, which is exactly how a one-way TX stall gets misread as a fabric
++# fault (2026-09-09).
++TBV_TB_HDR := $(KDIR)/include/linux/thunderbolt.h
++ifneq ($(shell grep -c interval_nsec $(TBV_TB_HDR) 2>/dev/null),0)
++ccflags-y += -DTBV_HAVE_RING_INTERVAL_NSEC
++endif
++ifneq ($(shell grep -c ring_layout $(TBV_TB_HDR) 2>/dev/null),0)
++ccflags-y += -DTBV_HAVE_NHI_RING_LAYOUT
++endif
++
+ .PHONY: all clean modules modules_install help
+ 
+ all: modules
+--- a/kernel/path.c	2026-09-06 10:37:20
++++ b/kernel/path.c	2026-09-09 16:07:17
+@@ -261,7 +261,11 @@
+ 	seq_printf(s, " %s[idx=%u hop=%d]=raw:%u ns:%u req_ns:%u", what, idx,
+ 		   ring->hop, raw,
+ 		   raw * TBV_APPLE_NHI_IRQ_THROTTLE_GRANULARITY_NSEC,
++#ifdef TBV_HAVE_RING_INTERVAL_NSEC
+ 		   ring->interval_nsec);
++#else
++		   0u);   /* stock kernel: no per-ring interval to report */
++#endif
+ }
+ 
+ void tbv_path_show_apple_throttle(struct seq_file *s, struct tbv_path *path)
+@@ -3378,9 +3382,13 @@
+ static const struct tbv_nhi_ring_layout_view *
+ tbv_nhi_ring_layout(const struct tb_ring *ring)
+ {
++#ifdef TBV_HAVE_NHI_RING_LAYOUT
+ 	if (ring->nhi->ring_layout)
+ 		return (const struct tbv_nhi_ring_layout_view *)
+ 			ring->nhi->ring_layout;
++#endif
++	/* Stock kernels expose no per-NHI layout; the default is what the
++	 * patched path falls back to anyway. */
+ 	return &tbv_nhi_default_layout;
+ }
+ 
