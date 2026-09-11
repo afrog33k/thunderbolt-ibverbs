@@ -1,0 +1,1 @@
+savedcmd_Module.symvers :=  /mnt/hordefast/kernel-build/linux-7.1.13-usb4gpu/scripts/mod/modpost -M          -o Module.symvers -n -T modules.order -i /mnt/hordefast/kernel-build/linux-7.1.13-usb4gpu/Module.symvers -e 

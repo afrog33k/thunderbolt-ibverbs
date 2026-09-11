@@ -1,0 +1,1 @@
+savedcmd_thunderbolt_ibverbs.ko := ld -r -EL  -maarch64linux -z norelro -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T /mnt/hordefast/kernel-build/linux-7.1.13-usb4gpu/scripts/module.lds -o thunderbolt_ibverbs.ko thunderbolt_ibverbs.o thunderbolt_ibverbs.mod.o .module-common.o
